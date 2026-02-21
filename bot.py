@@ -179,8 +179,12 @@ class CopyBot:
                     self._heartbeat(filtered)
                     last_heartbeat = now
 
-                # ── 5. Sleep ───────────────────────────────────────
-                await asyncio.sleep(self.config.poll_interval_seconds)
+                # ── 5. Sleep (back off when API is failing) ───────────
+                if self.tracker.consecutive_errors >= 5:
+                    backoff_seconds = 30.0
+                    await asyncio.sleep(backoff_seconds)
+                else:
+                    await asyncio.sleep(self.config.poll_interval_seconds)
 
             except Exception as e:
                 logger.error(f"Main-loop error: {e}")

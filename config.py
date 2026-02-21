@@ -2,7 +2,7 @@
 Copy Bot Configuration
 
 Loads settings from environment variables and provides defaults.
-This repo is pre-configured for the second copy target (larger account, BTC only, 0.005 ratio, 10x).
+This repo is pre-configured for the second copy target (larger account, BTC only, 0.001 ratio, 10x).
 """
 import os
 from pathlib import Path
@@ -38,7 +38,7 @@ class CopyBotConfig:
     #   "fixed_ratio"  – multiply target delta by fixed_ratio
     #   "fixed_size"   – always trade fixed_size per signal (direction matched)
     scaling_mode: str = "fixed_ratio"
-    fixed_ratio: float = 0.005
+    fixed_ratio: float = 0.001
     fixed_size: float = 0.001        # used only in fixed_size mode
 
     # ── Position limits ────────────────────────────────────────────
@@ -80,7 +80,7 @@ def load_config() -> CopyBotConfig:
         private_key=os.getenv("HL_PRIVATE_KEY", ""),
         account_address=os.getenv("HL_ACCOUNT_ADDRESS", ""),
         scaling_mode=os.getenv("COPY_SCALING_MODE", "fixed_ratio"),
-        fixed_ratio=float(os.getenv("COPY_FIXED_RATIO", "0.005")),
+        fixed_ratio=float(os.getenv("COPY_FIXED_RATIO", "0.001")),
         fixed_size=float(os.getenv("COPY_FIXED_SIZE", "0.001")),
         max_position_usd=float(os.getenv("COPY_MAX_POSITION_USD", "5000")),
         leverage=int(os.getenv("COPY_LEVERAGE", "10")),
