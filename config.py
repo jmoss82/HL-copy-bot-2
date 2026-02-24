@@ -2,7 +2,7 @@
 Copy Bot Configuration
 
 Loads settings from environment variables and provides defaults.
-This repo is pre-configured for the second copy target (larger account, BTC only, 0.001 ratio, 10x).
+This repo is pre-configured for the second copy target (larger account, multiple pairs, 0.001 ratio, 10x).
 """
 import os
 from pathlib import Path
@@ -56,7 +56,7 @@ class CopyBotConfig:
     min_trade_size_usd: float = 11.0  # HL minimum is ~$10
 
     # ── Coin filter ────────────────────────────────────────────────
-    coins_to_copy: List[str] = field(default_factory=lambda: ["BTC"])
+    coins_to_copy: List[str] = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
 
     # ── Startup behaviour ──────────────────────────────────────────
     sync_on_startup: bool = True  # open target's current position immediately
@@ -88,7 +88,7 @@ def load_config() -> CopyBotConfig:
         poll_interval_seconds=float(os.getenv("COPY_POLL_INTERVAL", "3.0")),
         slippage_bps=float(os.getenv("COPY_SLIPPAGE_BPS", "10.0")),
         min_trade_size_usd=float(os.getenv("COPY_MIN_TRADE_USD", "11.0")),
-        coins_to_copy=os.getenv("COPY_COINS", "BTC").split(","),
+        coins_to_copy=[s.strip() for s in os.getenv("COPY_COINS", "BTC,ETH,SOL").split(",")],
         sync_on_startup=os.getenv("COPY_SYNC_STARTUP", "true").lower() == "true",
         max_daily_trades=int(os.getenv("COPY_MAX_DAILY_TRADES", "200")),
         dry_run=os.getenv("COPY_DRY_RUN", "true").lower() == "true",
