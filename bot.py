@@ -28,27 +28,29 @@ class CopyBot:
     Main copy-trading controller.
 
     Lifecycle:
-        1. setup()        – initialise SDK, load metadata, set leverage
-        2. startup_sync() – optionally match target's current position
-        3. run()          – async poll loop (runs until stopped)
+        1. setup()        - initialise SDK, load metadata, set leverage
+        2. startup_sync() - optionally match target's current position
+        3. run()          - async poll loop (runs until stopped)
     """
 
     def __init__(self, config: CopyBotConfig):
         self.config = config
         self.tracker = PositionTracker(config.target_address)
         self.copier = TradeCopier(config)
+        self._sim_positions: dict = {}
 
         self.running = False
         self.start_time: float = 0.0
         self.trades_executed: int = 0
 
-    # ── Lifecycle ──────────────────────────────────────────────────
+    # -- Lifecycle --------------------------------------------------
 
     def setup(self) -> None:
         """Initialise the copier (SDK, leverage, metadata)."""
         logger.info("Initialising copy bot...")
         validate_config(self.config)
         self.copier.setup()
+        self._sim_positions = self.copier.get_our_positions()
 
         our_equity = self.copier.get_our_equity(force=True)
         logger.info(f"Your account equity: ${our_equity:,.2f}")
@@ -68,7 +70,7 @@ class CopyBot:
         filtered = self._filter_coins(target_positions)
 
         if not filtered:
-            logger.info("Target has no matching positions — starting clean")
+            logger.info("Target has no matching positions - starting clean")
             self.tracker.seed({})
             return
 
@@ -78,11 +80,11 @@ class CopyBot:
             side = "LONG" if size > 0 else "SHORT"
             logger.info(
                 f"  Target: {side} {abs(size):.6f} {coin} "
-                f"(entry ${data['entry_px']:,.1f}, {data['leverage']}x)"
+                f"(entry ${self._fmt_price(data['entry_px'])}, {data['leverage']}x)"
             )
 
         if self.config.sync_on_startup:
-            logger.info("sync_on_startup=True — matching target positions now")
+            logger.info("sync_on_startup=True - matching target positions now")
 
             our_positions = self.copier.get_our_positions()
 
@@ -90,20 +92,9 @@ class CopyBot:
                 target_size = data["size"]
                 our_size = our_positions.get(coin, 0.0)
 
-                # Build a synthetic PositionChange to use the normal scaling path
-                from tracker import PositionChange
-                change = PositionChange(
-                    coin=coin,
-                    old_size=0.0,
-                    new_size=target_size,
-                    delta=target_size,
-                    action="OPEN",
-                    target_entry_px=data["entry_px"],
-                    target_leverage=data["leverage"],
-                    timestamp=time.time(),
+                needed = self.copier.target_position_to_desired_size(
+                    coin, target_size, self.tracker.target_equity
                 )
-
-                needed = self.copier.scale_delta(change, self.tracker.target_equity)
                 already = our_size
                 gap = needed - already
 
@@ -117,17 +108,18 @@ class CopyBot:
                 )
                 result = self.copier.execute(coin, gap, dry_run=self.config.dry_run)
                 if result and result.success:
+                    self._record_position_change(coin, gap)
                     self.trades_executed += 1
         else:
-            logger.info("sync_on_startup=False — recording target state, waiting for changes")
+            logger.info("sync_on_startup=False - recording target state, waiting for changes")
 
         # Seed the tracker so the first poll-diff cycle is clean
         self.tracker.seed(target_positions)
 
-    # ── Main loop ──────────────────────────────────────────────────
+    # -- Main loop --------------------------------------------------
 
     async def run(self) -> None:
-        """Async polling loop — runs until self.running is set to False."""
+        """Async polling loop - runs until self.running is set to False."""
         self.running = True
         self.start_time = time.time()
 
@@ -143,48 +135,83 @@ class CopyBot:
 
         while self.running:
             try:
-                # ── 1. Poll target ─────────────────────────────────
+                # -- 1. Poll target ---------------------------------
                 target_positions = self.tracker.poll()
                 filtered = self._filter_coins(target_positions)
 
-                # ── 2. Diff ────────────────────────────────────────
-                changes = self.tracker.diff(filtered, self.config.coins_to_copy)
+                # -- 2. Diff ----------------------------------------
+                if self.config.reconcile_mode == "delta":
+                    changes = self.tracker.diff(filtered, self.config.coins_to_copy)
 
-                # ── 3. React to changes ────────────────────────────
-                for change in changes:
-                    logger.warning(f"TARGET MOVED: {change}")
+                    # -- 3. React to changes ------------------------
+                    for change in changes:
+                        logger.warning(f"TARGET MOVED: {change}")
 
-                    scaled = self.copier.scale_delta(
-                        change, self.tracker.target_equity,
-                    )
-                    if abs(scaled) < 1e-10:
-                        logger.info(f"  Scaled delta is zero — skipping")
-                        continue
+                        scaled = self.copier.scale_delta(
+                            change, self.tracker.target_equity,
+                        )
+                        if abs(scaled) < 1e-10:
+                            logger.info("  Scaled delta is zero - skipping")
+                            continue
 
-                    side = "BUY" if scaled > 0 else "SELL"
-                    logger.info(
-                        f"  Mirroring: {side} {abs(scaled):.6f} {change.coin} "
-                        f"(scaling={self.config.scaling_mode})"
-                    )
+                        side = "BUY" if scaled > 0 else "SELL"
+                        logger.info(
+                            f"  Mirroring: {side} {abs(scaled):.6f} {change.coin} "
+                            f"(scaling={self.config.scaling_mode})"
+                        )
 
-                    result = self.copier.execute(
-                        change.coin, scaled, dry_run=self.config.dry_run,
-                    )
-                    if result and result.success:
-                        self.trades_executed += 1
+                        result = self.copier.execute(
+                            change.coin, scaled, dry_run=self.config.dry_run,
+                        )
+                        if result and result.success:
+                            self._record_position_change(change.coin, scaled)
+                            self.trades_executed += 1
+                else:
+                    # State-based reconciliation: each poll aims for target alignment.
+                    self.tracker.seed(filtered)
+                    our_positions = self._effective_positions()
+                    for coin in self._coins_to_reconcile(filtered, our_positions):
+                        target_size = filtered.get(coin, {}).get("size", 0.0)
+                        desired_size = self.copier.target_position_to_desired_size(
+                            coin, target_size, self.tracker.target_equity
+                        )
+                        current_size = our_positions.get(coin, 0.0)
+                        delta = desired_size - current_size
 
-                # ── 4. Heartbeat ───────────────────────────────────
+                        if abs(delta) < 1e-10:
+                            continue
+                        mid = self.copier.get_mid_price(coin)
+                        if (
+                            mid > 0
+                            and abs(delta) * mid < self.config.min_trade_size_usd
+                        ):
+                            # Avoid perpetual tiny rebalance attempts caused by price drift.
+                            continue
+
+                        side = "BUY" if delta > 0 else "SELL"
+                        logger.warning(
+                            f"REBALANCE {coin}: target={target_size:+.6f}, "
+                            f"desired={desired_size:+.6f}, ours={current_size:+.6f}"
+                        )
+                        logger.info(
+                            f"  Mirroring: {side} {abs(delta):.6f} {coin} "
+                            f"(mode={self.config.reconcile_mode}, scaling={self.config.scaling_mode})"
+                        )
+                        result = self.copier.execute(
+                            coin, delta, dry_run=self.config.dry_run,
+                        )
+                        if result and result.success:
+                            self._record_position_change(coin, delta)
+                            self.trades_executed += 1
+
+                # -- 4. Heartbeat -----------------------------------
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
                     self._heartbeat(filtered)
                     last_heartbeat = now
 
-                # ── 5. Sleep (back off when API is failing) ───────────
-                if self.tracker.consecutive_errors >= 5:
-                    backoff_seconds = 30.0
-                    await asyncio.sleep(backoff_seconds)
-                else:
-                    await asyncio.sleep(self.config.poll_interval_seconds)
+                # -- 5. Sleep ---------------------------------------
+                await asyncio.sleep(self.config.poll_interval_seconds)
 
             except Exception as e:
                 logger.error(f"Main-loop error: {e}")
@@ -198,7 +225,7 @@ class CopyBot:
         self._print_summary()
         logger.info("Copy bot stopped.")
 
-    # ── Helpers ────────────────────────────────────────────────────
+    # -- Helpers ----------------------------------------------------
 
     def _filter_coins(self, positions: dict) -> dict:
         """Keep only the coins we're configured to copy."""
@@ -227,7 +254,7 @@ class CopyBot:
             parts.append(f"Target {coin}: {side}{abs(size):.4f}")
 
         # Our position summary
-        our = self.copier.get_our_positions()
+        our = self._effective_positions()
         for coin in self.config.coins_to_copy:
             if coin == "*":
                 continue
@@ -239,6 +266,26 @@ class CopyBot:
                 parts.append(f"Ours {coin}: flat")
 
         logger.info("HEARTBEAT | " + " | ".join(parts))
+
+    def _coins_to_reconcile(self, target_positions: dict, our_positions: dict) -> list:
+        """Return the coin list to reconcile when running in state mode."""
+        if "*" in self.config.coins_to_copy:
+            return sorted(set(target_positions.keys()) | set(our_positions.keys()))
+        return [coin for coin in self.config.coins_to_copy if coin != "*"]
+
+    def _effective_positions(self) -> dict:
+        """Use simulated positions in dry-run so reconciliation converges in tests."""
+        if self.config.dry_run:
+            return dict(self._sim_positions)
+        return self.copier.get_our_positions()
+
+    def _record_position_change(self, coin: str, delta: float) -> None:
+        """Track synthetic position changes when dry-run mode is active."""
+        if not self.config.dry_run:
+            return
+        self._sim_positions[coin] = self._sim_positions.get(coin, 0.0) + delta
+        if abs(self._sim_positions[coin]) < 1e-10:
+            self._sim_positions.pop(coin, None)
 
     def _print_summary(self) -> None:
         """Print a final status block on shutdown."""
@@ -263,15 +310,28 @@ class CopyBot:
             print()
         print(f"{'=' * 60}\n")
 
+    @staticmethod
+    def _fmt_price(price: float) -> str:
+        """Render prices with enough precision for sub-$1 perps."""
+        if price >= 100:
+            return f"{price:,.1f}"
+        if price >= 1:
+            return f"{price:,.3f}"
+        if price >= 0.1:
+            return f"{price:,.4f}"
+        if price >= 0.01:
+            return f"{price:,.5f}"
+        return f"{price:,.6f}"
 
-# ── Entry point ────────────────────────────────────────────────────
+
+# -- Entry point ----------------------------------------------------
 
 async def main():
     """Top-level entry: load config, wire up signals, run bot."""
 
     cfg = load_config()
 
-    # ── Logging ────────────────────────────────────────────────────
+    # -- Logging ----------------------------------------------------
     bot_dir = Path(__file__).parent
     log_dir = bot_dir / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -293,29 +353,38 @@ async def main():
         level="DEBUG",
     )
 
-    # ── Banner ─────────────────────────────────────────────────────
+    # -- Banner -----------------------------------------------------
     mode_label = "DRY RUN" if cfg.dry_run else "LIVE TRADING"
     print(f"""
-    ╔══════════════════════════════════════════════════════╗
-    ║         HYPERLIQUID COPY TRADING BOT                ║
-    ║         Mode: {mode_label: <39}║
-    ╚══════════════════════════════════════════════════════╝
+    +======================================================+
+    |         HYPERLIQUID COPY TRADING BOT                |
+    |         Mode: {mode_label: <39}|
+    +======================================================+
     """)
 
     logger.info(f"Target:    {cfg.target_address}")
     logger.info(f"Coins:     {cfg.coins_to_copy}")
-    logger.info(f"Scaling:   {cfg.scaling_mode} (ratio={cfg.fixed_ratio})")
+    if cfg.scaling_mode == "fixed_ratio":
+        scaling_detail = f"ratio={cfg.fixed_ratio}"
+    elif cfg.scaling_mode == "fixed_size":
+        scaling_detail = f"size={cfg.fixed_size}"
+    elif cfg.scaling_mode == "fixed_notional":
+        scaling_detail = f"notional=${cfg.fixed_notional_usd}"
+    else:
+        scaling_detail = "equity-proportional"
+    logger.info(f"Scaling:   {cfg.scaling_mode} ({scaling_detail})")
+    logger.info(f"Copy mode: {cfg.reconcile_mode}")
     logger.info(f"Leverage:  {cfg.leverage}x ({'cross' if cfg.is_cross else 'isolated'})")
     logger.info(f"Polling:   every {cfg.poll_interval_seconds}s")
     logger.info(f"Slippage:  {cfg.slippage_bps} bps")
     logger.info(f"Dry run:   {cfg.dry_run}")
 
-    # ── Build bot ──────────────────────────────────────────────────
+    # -- Build bot --------------------------------------------------
     bot = CopyBot(cfg)
 
-    # ── Graceful shutdown ──────────────────────────────────────────
+    # -- Graceful shutdown ------------------------------------------
     def handle_signal(sig, _frame):
-        logger.info(f"Signal {sig} received — shutting down")
+        logger.info(f"Signal {sig} received - shutting down")
         bot.stop()
 
     signal.signal(signal.SIGINT, handle_signal)

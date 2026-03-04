@@ -57,9 +57,8 @@ class PositionTracker:
         self._target_equity: float = 0.0
         self._last_poll_time: float = 0.0
         self._consecutive_errors: int = 0
-        self._critical_already_logged: bool = False  # only log CRITICAL once per outage
 
-    # ── Public API ─────────────────────────────────────────────────
+    # -- Public API -------------------------------------------------
 
     def poll(self) -> Dict[str, dict]:
         """
@@ -82,18 +81,10 @@ class PositionTracker:
                 f"Failed to poll target wallet (attempt {self._consecutive_errors}): {e}"
             )
             if self._consecutive_errors >= 5:
-                if not self._critical_already_logged:
-                    logger.critical(
-                        "5 consecutive poll failures — check network / API. "
-                        "Backing off; will retry until API recovers."
-                    )
-                    self._critical_already_logged = True
+                logger.critical("5 consecutive poll failures - check network / API")
             return self._last_positions  # return stale data so diff produces no changes
 
-        if self._critical_already_logged:
-            logger.info("Target wallet poll recovered after API issues.")
         self._consecutive_errors = 0
-        self._critical_already_logged = False
         self._last_poll_time = time.time()
 
         # Parse equity
@@ -178,12 +169,7 @@ class PositionTracker:
         self._last_positions = positions
         logger.info(f"Tracker seeded with {len(positions)} position(s)")
 
-    # ── Properties ─────────────────────────────────────────────────
-
-    @property
-    def consecutive_errors(self) -> int:
-        """Number of consecutive poll failures; 0 after a successful poll."""
-        return self._consecutive_errors
+    # -- Properties -------------------------------------------------
 
     @property
     def target_equity(self) -> float:
@@ -193,7 +179,7 @@ class PositionTracker:
     def last_positions(self) -> Dict[str, dict]:
         return dict(self._last_positions)
 
-    # ── Helpers ────────────────────────────────────────────────────
+    # -- Helpers ----------------------------------------------------
 
     @staticmethod
     def _classify(old_size: float, new_size: float) -> str:
