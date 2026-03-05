@@ -9,15 +9,10 @@ from dataclasses import dataclass, field
 from typing import List
 from dotenv import load_dotenv
 
-# Load .env file
+# Load .env file (local only - Railway provides env vars directly)
 env_file = Path(__file__).parent / ".env"
 if env_file.exists():
     load_dotenv(env_file)
-else:
-    # Fall back to the grid-bot's env file if available
-    grid_env = Path(__file__).parent.parent / "grid-bot" / ".env.hyperliquid"
-    if grid_env.exists():
-        load_dotenv(grid_env)
 
 
 @dataclass

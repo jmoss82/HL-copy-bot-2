@@ -43,6 +43,10 @@ class CopyBot:
         self.start_time: float = 0.0
         self.trades_executed: int = 0
 
+        # Coins locked at startup because the target already had them open.
+        # We wait for the target to close before tracking these coins.
+        self._startup_locked_coins: set = set()
+
     # -- Lifecycle --------------------------------------------------
 
     def setup(self) -> None:
@@ -111,7 +115,11 @@ class CopyBot:
                     self._record_position_change(coin, gap)
                     self.trades_executed += 1
         else:
-            logger.info("sync_on_startup=False - recording target state, waiting for changes")
+            self._startup_locked_coins = set(filtered.keys())
+            for coin in self._startup_locked_coins:
+                logger.info(
+                    f"  {coin}: target already in position - locked until they close"
+                )
 
         # Seed the tracker so the first poll-diff cycle is clean
         self.tracker.seed(target_positions)
@@ -169,8 +177,19 @@ class CopyBot:
                 else:
                     # State-based reconciliation: each poll aims for target alignment.
                     self.tracker.seed(filtered)
+
+                    # Unlock coins where the target has closed their startup position.
+                    for coin in list(self._startup_locked_coins):
+                        if abs(filtered.get(coin, {}).get("size", 0.0)) < 1e-10:
+                            self._startup_locked_coins.discard(coin)
+                            logger.info(
+                                f"{coin}: startup lock released - will follow next entry"
+                            )
+
                     our_positions = self._effective_positions()
                     for coin in self._coins_to_reconcile(filtered, our_positions):
+                        if coin in self._startup_locked_coins:
+                            continue
                         target_size = filtered.get(coin, {}).get("size", 0.0)
                         desired_size = self.copier.target_position_to_desired_size(
                             coin, target_size, self.tracker.target_equity
