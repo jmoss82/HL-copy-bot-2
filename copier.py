@@ -317,7 +317,10 @@ class TradeCopier:
 
         is_buy = signed_delta > 0
         side = "BUY" if is_buy else "SELL"
-        abs_size = abs(signed_delta)
+        abs_size = round(abs(signed_delta), decimals)
+        if abs_size == 0:
+            logger.debug(f"Clipped size rounded to zero for {coin}, skipping")
+            return None
 
         notional = abs_size * mid
         if notional < self.config.min_trade_size_usd:
