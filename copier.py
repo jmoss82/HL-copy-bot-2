@@ -363,8 +363,6 @@ class TradeCopier:
                 reduce_only=False,
             )
 
-            self._trade_timestamps.append(now)
-
             # Parse SDK response
             if result and result.get("status") == "ok":
                 statuses = (
@@ -379,6 +377,7 @@ class TradeCopier:
                         avg = float(fill.get("avgPx", 0))
                         tsz = float(fill.get("totalSz", 0))
                         oid = fill.get("oid", 0)
+                        self._trade_timestamps.append(now)
                         # Force next reconciliation to pull fresh on-chain positions.
                         self._positions_ts = 0.0
                         logger.success(
@@ -389,6 +388,7 @@ class TradeCopier:
 
                     if "resting" in st:
                         oid = st["resting"].get("oid", 0)
+                        self._trade_timestamps.append(now)
                         self._positions_ts = 0.0
                         logger.warning(
                             f"Order resting (unexpected for IOC): oid={oid}"
