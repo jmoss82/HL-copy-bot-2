@@ -1,8 +1,10 @@
 # HyperLiquid Copy Trading Bot
 
-This folder contains one of the three live HyperLiquid copy-trading bots in this repository.
+This folder contains one of the four live HyperLiquid copy-trading bots in this repository.
 
 It is a separate bot instance with its own deployment, copied wallet, coin universe, and risk settings. The core engine is the same as the other `copy-bot*` folders, but the runtime configuration is independent.
+
+As of April 16, 2026, this bot is the first standard-perp bot in the workspace being moved off the main account and onto a HyperLiquid sub-account.
 
 ## Important Context
 
@@ -14,6 +16,13 @@ For this bot, the real source of truth is:
 2. the environment variables configured for this deployment
 
 That means this folder represents one live strategy, but its exact target wallet and coin list should be confirmed from Railway variables or a local `.env`, not assumed from documentation text.
+
+Current rollout status:
+
+- Bot 2 is routed to sub-account `SA1`
+- an API wallet is used as the signer
+- the deployment has been verified in both dry-run and live startup flows
+- rate-limit behaviour is still being monitored under real runtime conditions
 
 ## Runtime Flow
 
@@ -58,6 +67,18 @@ The main variables to understand are:
 | `COPY_DRY_RUN` | Simulated vs live execution |
 
 Use `.env.example` as a template, not as guaranteed documentation of the live deployed values.
+
+For sub-account deployments:
+
+- `HL_WALLET_ADDRESS` must be the address that matches `HL_PRIVATE_KEY`
+- `HL_ACCOUNT_ADDRESS` should be the sub-account or agent-wallet address you want this bot to trade on
+- if `HL_ACCOUNT_ADDRESS` is left blank, the bot trades on the signer wallet directly
+
+For the current Bot 2 deployment, the signer is an API wallet and `HL_ACCOUNT_ADDRESS` points to `SA1`.
+
+Do not include the `HL:` prefix that HyperLiquid sometimes shows in the UI when copying a sub-account address. Railway should store the raw `0x...` address.
+
+One important implementation detail for sub-accounts: HyperLiquid can expose capital partly in perp state and partly in spot balances while still using that capital for trading. Bot 2's equity calculation was updated in April 2026 so startup equity reflects combined sub-account value rather than just posted perp margin.
 
 ## Reconcile Modes
 
